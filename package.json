@@ -1,0 +1,25 @@
+{
+  "name": "elysia-servicenow-mcp-remote",
+  "version": "1.0.0",
+  "description": "ServiceNow MCP Server (Remote) built with ElysiaJS + Bun via Streamable HTTP",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "build": "bun build --compile --minify-whitespace --minify-syntax --outfile server src/index.ts",
+    "test": "bun test",
+    "docker:build": "docker build -t elysia-servicenow-mcp-remote .",
+    "docker:run": "docker run -p 3000:3000 --env-file .env elysia-servicenow-mcp-remote",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "elysia": "^1.2.0",
+    "@elysiajs/cors": "^1.2.0",
+    "@modelcontextprotocol/sdk": "^1.11.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.7.0"
+  }
+}
