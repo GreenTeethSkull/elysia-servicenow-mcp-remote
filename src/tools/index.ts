@@ -34,6 +34,12 @@ import {
   requirementSearchDescription,
   handleRequirementSearch,
 } from "./requirement-search";
+import {
+  changeSearchSchema,
+  changeSearchAnnotations,
+  changeSearchDescription,
+  handleChangeSearch,
+} from "./change-search";
 
 // Rate limiting state
 let toolCallTimestamps: number[] = [];
@@ -95,8 +101,7 @@ function createToolHandler(
         };
       }
 
-      const message =
-        error instanceof Error ? error.message : String(error);
+      const message = error instanceof Error ? error.message : String(error);
       console.error(`Tool ${name} error:`, error);
       return {
         content: [{ type: "text", text: `Error: ${message}` }],
@@ -119,9 +124,7 @@ export function registerAllTools(
     kbSearchDescription,
     kbSearchSchema,
     kbSearchAnnotations,
-    createToolHandler("kb_search", (args) =>
-      handleKbSearch(client, args),
-    ),
+    createToolHandler("kb_search", (args) => handleKbSearch(client, args)),
   );
 
   // incident_search
@@ -157,5 +160,16 @@ export function registerAllTools(
     ),
   );
 
-  console.error("Registered 4 ServiceNow MCP tools.");
+  // change_search
+  server.tool(
+    "change_search",
+    changeSearchDescription,
+    changeSearchSchema,
+    changeSearchAnnotations,
+    createToolHandler("change_search", (args) =>
+      handleChangeSearch(client, args),
+    ),
+  );
+
+  console.error("Registered 5 ServiceNow MCP tools.");
 }
