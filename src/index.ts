@@ -7,9 +7,14 @@
 
 import { createApp } from "./server";
 import { SERVER_NAME, SERVER_VERSION } from "./constants";
+import { logger } from "./services/logger";
 
 async function main() {
-  console.error(`Initializing ${SERVER_NAME} v${SERVER_VERSION}...`);
+  logger.info("Server initializing", {
+    nodeVersion: process.version,
+    platform: process.platform,
+    arch: process.arch,
+  });
 
   const app = await createApp();
 
@@ -18,14 +23,18 @@ async function main() {
 
   app.listen({ port, hostname: host });
 
-  console.error(`${SERVER_NAME} v${SERVER_VERSION} is running!`);
-  console.error(`  MCP endpoint: http://${host}:${port}/mcp`);
-  console.error(`  Health check: http://${host}:${port}/health`);
-  console.error(`  Server info:  http://${host}:${port}/`);
+  logger.info("Server started", {
+    host,
+    port,
+    mcpEndpoint: `http://${host}:${port}/mcp`,
+    healthCheck: `http://${host}:${port}/health`,
+    serverInfo: `http://${host}:${port}/`,
+    logLevel: process.env.LOG_LEVEL || "info",
+  });
 
   // Graceful shutdown
   const shutdown = () => {
-    console.error("Shutting down MCP server...");
+    logger.info("Server shutting down");
     app.stop();
     process.exit(0);
   };
@@ -35,6 +44,9 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error("Fatal error:", error);
+  logger.error("Fatal error during startup", {
+    error: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : undefined,
+  });
   process.exit(1);
 });

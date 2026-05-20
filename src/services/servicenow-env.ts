@@ -5,6 +5,8 @@
  * to a ServiceNow instance, validates them, and returns a typed config.
  */
 
+import { logger } from "./logger";
+
 export interface ServiceNowEnv {
   /** ServiceNow instance URL (e.g., https://dev12345.service-now.com) */
   instanceUrl: string;
@@ -54,9 +56,10 @@ export function getServiceNowEnv(): ServiceNowEnv {
   if (timeoutStr) {
     const parsed = parseInt(timeoutStr, 10);
     if (isNaN(parsed) || parsed < 1000 || parsed > 120_000) {
-      console.error(
-        `Invalid SERVICENOW_TIMEOUT "${timeoutStr}". Using default 30000ms.`,
-      );
+      logger.warn("Invalid SERVICENOW_TIMEOUT, using default", {
+        providedValue: timeoutStr,
+        defaultValue: 30000,
+      });
     } else {
       timeout = parsed;
     }

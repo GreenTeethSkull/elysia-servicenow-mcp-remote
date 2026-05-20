@@ -4,9 +4,12 @@
  *
  * This is a lightweight client that works with Bun's native fetch
  * without any Node.js-specific HTTP dependencies.
+ *
+ * Includes structured logging for all API calls (table, duration, status).
  */
 
 import { SERVER_NAME, SERVER_VERSION, REQUEST_TIMEOUT_MS } from "../constants";
+import { logger } from "./logger";
 
 export interface ServiceNowClientConfig {
   instanceUrl: string;
@@ -41,15 +44,21 @@ export class ServiceNowClient {
     queryParams: URLSearchParams,
   ): Promise<ServiceNowApiResponse<T>> {
     const url = `${this.baseUrl}/api/now/table/${table}?${queryParams.toString()}`;
-    return this.request<ServiceNowApiResponse<T>>(url);
+    return this.request<ServiceNowApiResponse<T>>(url, table);
   }
 
   /**
    * Make a raw authenticated GET request to any ServiceNow URL.
+   * Logs table name, duration, status code, and record count.
    */
-  private async request<T>(url: string): Promise<T> {
+  private async request<T>(url: string, table?: string): Promise<T> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+    const startTime = performance.now();
+
+    // Extract just the path portion for logging (hide query params with credentials)
+    const urlObj = new URL(url);
+    const logPath = urlObj.pathname;
 
     try {
       const response = await fetch(url, {
@@ -63,8 +72,21 @@ export class ServiceNowClient {
         signal: controller.signal,
       });
 
+      const durationMs = Math.round(performance.now() - startTime);
+
       if (!response.ok) {
         const errorBody = await response.text().catch(() => "");
+
+        logger.error("ServiceNow API request failed", {
+          table: table || "unknown",
+          httpMethod: "GET",
+          path: logPath,
+          httpStatus: response.status,
+          httpStatusText: response.statusText,
+          durationMs,
+          errorBodyLength: errorBody.length,
+        });
+
         throw new ServiceNowApiError(
           `ServiceNow API error: ${response.status} ${response.statusText}`,
           response.status,
@@ -72,17 +94,53 @@ export class ServiceNowClient {
         );
       }
 
-      return (await response.json()) as T;
+      const data = (await response.json()) as T;
+
+      // Log successful API call
+      const apiResponse = data as ServiceNowApiResponse;
+      const recordCount = Array.isArray(apiResponse.result)
+        ? apiResponse.result.length
+        : apiResponse.result
+          ? 1
+          : 0;
+
+      logger.debug("ServiceNow API request completed", {
+        table: table || "unknown",
+        httpMethod: "GET",
+        path: logPath,
+        httpStatus: response.status,
+        durationMs,
+        recordCount,
+        totalRecords: apiResponse.total,
+      });
+
+      return data;
     } catch (error) {
+      const durationMs = Math.round(performance.now() - startTime);
+
       if (error instanceof ServiceNowApiError) throw error;
 
       if ((error as Error).name === "AbortError") {
+        logger.error("ServiceNow API request timed out", {
+          table: table || "unknown",
+          path: logPath,
+          timeoutMs: this.timeout,
+          durationMs,
+        });
+
         throw new ServiceNowApiError(
           `ServiceNow API request timed out after ${this.timeout}ms`,
           408,
           "",
         );
       }
+
+      logger.error("ServiceNow API connection failed", {
+        table: table || "unknown",
+        path: logPath,
+        durationMs,
+        error: error instanceof Error ? error.message : String(error),
+      });
 
       throw new ServiceNowApiError(
         `ServiceNow connection failed: ${error instanceof Error ? error.message : String(error)}`,

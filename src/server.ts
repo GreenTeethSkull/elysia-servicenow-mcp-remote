@@ -20,7 +20,44 @@ import { SERVER_NAME, SERVER_VERSION } from "./constants";
 import { ServiceNowClient } from "./services/servicenow-client";
 import { getServiceNowEnv } from "./services/servicenow-env";
 import { registerAllTools } from "./tools";
-import { log } from "./services/logger";
+import { logger, generateCorrelationId } from "./services/logger";
+
+/**
+ * Extract the JSON-RPC method from a parsed MCP request body.
+ * MCP uses JSON-RPC 2.0: { jsonrpc, id, method, params }
+ */
+function extractJsonRpcMethod(body: unknown): {
+  method: string;
+  id: string | number | null;
+  params: unknown;
+} {
+  if (body && typeof body === "object" && "method" in body) {
+    const obj = body as Record<string, unknown>;
+    const rawId = obj.id;
+    return {
+      method: typeof obj.method === "string" ? obj.method : "unknown",
+      id: typeof rawId === "string" || typeof rawId === "number" ? rawId : null,
+      params: obj.params,
+    };
+  }
+  return { method: "unknown", id: null, params: null };
+}
+
+/**
+ * Summarize tool call args for logging (truncate long values, omit sensitive data).
+ */
+function summarizeArgs(args: unknown): Record<string, unknown> | undefined {
+  if (!args || typeof args !== "object") return undefined;
+  const summary: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 100) {
+      summary[key] = value.slice(0, 100) + "...";
+    } else {
+      summary[key] = value;
+    }
+  }
+  return summary;
+}
 
 /**
  * Creates and configures the ElysiaJS application with MCP transport.
@@ -38,19 +75,21 @@ export async function createApp() {
   });
 
   // ── 3. Test connection to ServiceNow ──
-  console.error(
-    `Testing connection to ServiceNow instance: ${env.instanceUrl}...`,
-  );
+  logger.info("Testing ServiceNow connection", {
+    instanceUrl: env.instanceUrl,
+  });
+
   const connectionTest = await snClient.testConnection();
   if (!connectionTest.success) {
-    console.error(
-      `Failed to connect to ServiceNow: ${connectionTest.error}`,
-    );
+    logger.error("ServiceNow connection failed", {
+      error: connectionTest.error,
+      instanceUrl: env.instanceUrl,
+    });
     process.exit(2);
   }
-  console.error(
-    `Successfully connected to ServiceNow at ${env.instanceUrl}.`,
-  );
+  logger.info("ServiceNow connection established", {
+    instanceUrl: env.instanceUrl,
+  });
 
   // ── 4. Create McpServer and register tools ──
   const mcpServer = new McpServer(
@@ -86,21 +125,25 @@ export async function createApp() {
       }),
     )
 
-    // ── Request logging ──
+    // ── Request logging (all HTTP requests) ──
     .onRequest(({ request }) => {
-      log("debug", "incoming request", {
+      logger.debug("HTTP request received", {
         method: request.method,
         url: request.url,
+        userAgent: request.headers.get("user-agent") || undefined,
       });
     })
 
     // ── Health check ──
-    .get("/health", () => ({
-      status: "healthy",
-      service: SERVER_NAME,
-      version: SERVER_VERSION,
-      timestamp: new Date().toISOString(),
-    }))
+    .get("/health", () => {
+      logger.debug("Health check requested");
+      return {
+        status: "healthy",
+        service: SERVER_NAME,
+        version: SERVER_VERSION,
+        timestamp: new Date().toISOString(),
+      };
+    })
 
     // ── Server info ──
     .get("/", () => ({
@@ -118,6 +161,9 @@ export async function createApp() {
     // ── MCP Endpoint: POST /mcp ──
     // Each POST creates a new stateless StreamableHTTPServerTransport
     .post("/mcp", async ({ request, set }) => {
+      const correlationId = generateCorrelationId();
+      const requestStart = performance.now();
+
       // Read the raw body
       const rawBody = await request.text();
 
@@ -125,6 +171,10 @@ export async function createApp() {
       try {
         body = JSON.parse(rawBody);
       } catch {
+        logger.error("MCP request: invalid JSON body", {
+          correlationId,
+          rawBodyLength: rawBody.length,
+        });
         set.status = 400;
         return {
           jsonrpc: "2.0",
@@ -132,6 +182,33 @@ export async function createApp() {
           error: { code: -32700, message: "Parse error: Invalid JSON" },
         };
       }
+
+      // Extract JSON-RPC method for logging
+      const { method, id: rpcId, params } = extractJsonRpcMethod(body);
+
+      // For tool calls, extract the tool name from params
+      const toolName: string | undefined =
+        method === "tools/call" && params && typeof params === "object"
+          ? typeof (params as Record<string, unknown>).name === "string"
+            ? (params as Record<string, unknown>).name as string
+            : undefined
+          : undefined;
+
+      // Build args summary for tool calls
+      const toolArgs: Record<string, unknown> | undefined =
+        method === "tools/call" && params && typeof params === "object"
+          ? summarizeArgs((params as Record<string, unknown>).arguments)
+          : undefined;
+
+      logger.info("MCP request received", {
+        correlationId,
+        method,
+        rpcId: rpcId != null ? String(rpcId) : undefined,
+        toolName: toolName ?? undefined,
+        toolArgs,
+        clientIp: request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip") || undefined,
+        userAgent: request.headers.get("user-agent") || undefined,
+      });
 
       // Create a stateless HTTP transport for each request
       const transport = new StreamableHTTPServerTransport({
@@ -181,6 +258,7 @@ export async function createApp() {
             this.headersSent = true;
 
             const responseBody = Buffer.concat(chunks).toString("utf-8");
+            const durationMs = Math.round(performance.now() - requestStart);
 
             set.status = statusCode;
             for (const [k, v] of Object.entries(responseHeaders)) {
@@ -189,8 +267,39 @@ export async function createApp() {
 
             // Try to parse as JSON, otherwise return as text
             try {
-              resolve(JSON.parse(responseBody));
+              const parsed = JSON.parse(responseBody);
+
+              // Log successful MCP response
+              if (statusCode >= 400) {
+                logger.warn("MCP request completed with error status", {
+                  correlationId,
+                  method,
+                  rpcId: rpcId != null ? String(rpcId) : undefined,
+                  toolName: toolName ?? undefined,
+                  statusCode,
+                  durationMs,
+                });
+              } else {
+                logger.info("MCP request completed", {
+                  correlationId,
+                  method,
+                  rpcId: rpcId != null ? String(rpcId) : undefined,
+                  toolName: toolName ?? undefined,
+                  statusCode,
+                  durationMs,
+                });
+              }
+
+              resolve(parsed);
             } catch {
+              logger.info("MCP request completed (non-JSON)", {
+                correlationId,
+                method,
+                rpcId,
+                statusCode,
+                durationMs,
+                responseLength: responseBody.length,
+              });
               resolve(responseBody);
             }
           },
@@ -252,7 +361,16 @@ export async function createApp() {
             body,
           );
         } catch (error) {
-          console.error("MCP transport error:", error);
+          const durationMs = Math.round(performance.now() - requestStart);
+          logger.error("MCP transport error", {
+            correlationId,
+            method,
+            rpcId: rpcId != null ? String(rpcId) : undefined,
+            toolName: toolName ?? undefined,
+            durationMs,
+            error: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined,
+          });
           set.status = 500;
           resolve({
             jsonrpc: "2.0",
