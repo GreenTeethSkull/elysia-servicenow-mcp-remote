@@ -131,7 +131,7 @@ function createToolHandler(
         content: [
           {
             type: "text",
-            text: "Rate limit exceeded: Maximum 5 tool calls per 60 seconds. Please try again later.",
+            text: `Rate limit exceeded: Maximum ${RATE_LIMIT_MAX_CALLS} tool calls per ${RATE_LIMIT_WINDOW_MS / 1000} seconds. Please try again later.`,
           },
         ],
         isError: true,

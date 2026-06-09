@@ -60,6 +60,28 @@ function summarizeArgs(args: unknown): Record<string, unknown> | undefined {
 }
 
 /**
+ * Creates a fresh McpServer instance with all tools registered.
+ * Called per-request to support concurrent requests without shared state.
+ */
+function createMcpServer(snClient: ServiceNowClient): McpServer {
+  const server = new McpServer(
+    {
+      name: "ServiceNow MCP Server (Elysia)",
+      version: SERVER_VERSION,
+    },
+    {
+      capabilities: {
+        tools: {},
+      },
+    },
+  );
+
+  registerAllTools(server, snClient);
+
+  return server;
+}
+
+/**
  * Creates and configures the ElysiaJS application with MCP transport.
  */
 export async function createApp() {
@@ -91,22 +113,7 @@ export async function createApp() {
     instanceUrl: env.instanceUrl,
   });
 
-  // ── 4. Create McpServer and register tools ──
-  const mcpServer = new McpServer(
-    {
-      name: "ServiceNow MCP Server (Elysia)",
-      version: SERVER_VERSION,
-    },
-    {
-      capabilities: {
-        tools: {},
-      },
-    },
-  );
-
-  registerAllTools(mcpServer, snClient);
-
-  // ── 5. Build ElysiaJS app ──
+  // ── 4. Build ElysiaJS app ──
   const corsOrigin = process.env.CORS_ORIGIN || "*";
 
   const app = new Elysia({ aot: true })
@@ -159,10 +166,13 @@ export async function createApp() {
     }))
 
     // ── MCP Endpoint: POST /mcp ──
-    // Each POST creates a new stateless StreamableHTTPServerTransport
+    // Each POST creates a new McpServer + StreamableHTTPServerTransport (stateless)
     .post("/mcp", async ({ request, set }) => {
       const correlationId = generateCorrelationId();
       const requestStart = performance.now();
+
+      // Create a fresh McpServer per request to support concurrent requests
+      const mcpServer = createMcpServer(snClient);
 
       // Read the raw body
       const rawBody = await request.text();

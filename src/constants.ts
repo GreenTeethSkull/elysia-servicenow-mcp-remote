@@ -8,8 +8,12 @@ export const REQUEST_TIMEOUT_MS = 30_000;
 export const SESSION_TTL_MINUTES = 30;
 
 // Rate limiting
-export const RATE_LIMIT_MAX_CALLS = 5;
+export const RATE_LIMIT_MAX_CALLS = 60;
 export const RATE_LIMIT_WINDOW_MS = 60_000; // 60 seconds
+
+// Retry configuration for ServiceNow API
+export const MAX_RETRIES = 3;
+export const RETRY_BASE_DELAY_MS = 1_000; // 1 second base delay for exponential backoff
 
 // ServiceNow query constraints
 export const MIN_QUERY_LENGTH = 3;

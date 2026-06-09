@@ -7,7 +7,9 @@ Servidor MCP (Model Context Protocol) remoto para ServiceNow, construido con Ely
 - **Remote MCP Server**: Implementa el protocolo MCP vía Streamable HTTP (stateless)
 - **TypeScript + Bun**: Código type-safe con el runtime de Bun de alto rendimiento
 - **ElysiaJS**: Framework web ultrarrápido y minimalista
-- **Rate Limiting**: Protección contra abusos (5 llamadas por minuto)
+- **Rate Limiting**: Protección contra abusos (60 llamadas por minuto)
+- **Concurrencia**: Soporta múltiples requests simultáneos creando instancias aisladas de McpServer por request
+- **Retry con Backoff**: Reintentos automáticos con exponential backoff ante HTTP 429 de ServiceNow
 - **Docker Ready**: Despliegue contenedorizado listo para producción
 
 ## Herramientas Disponibles

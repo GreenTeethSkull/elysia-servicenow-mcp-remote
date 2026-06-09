@@ -8,7 +8,7 @@
  * Includes structured logging for all API calls (table, duration, status).
  */
 
-import { SERVER_NAME, SERVER_VERSION, REQUEST_TIMEOUT_MS } from "../constants";
+import { SERVER_NAME, SERVER_VERSION, REQUEST_TIMEOUT_MS, MAX_RETRIES, RETRY_BASE_DELAY_MS } from "../constants";
 import { logger } from "./logger";
 
 export interface ServiceNowClientConfig {
@@ -50,8 +50,9 @@ export class ServiceNowClient {
   /**
    * Make a raw authenticated GET request to any ServiceNow URL.
    * Logs table name, duration, status code, and record count.
+   * Includes automatic retry with exponential backoff for rate limits (HTTP 429).
    */
-  private async request<T>(url: string, table?: string): Promise<T> {
+  private async request<T>(url: string, table?: string, retries: number = MAX_RETRIES): Promise<T> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
     const startTime = performance.now();
@@ -76,6 +77,24 @@ export class ServiceNowClient {
 
       if (!response.ok) {
         const errorBody = await response.text().catch(() => "");
+
+        if (response.status === 429 && retries > 0) {
+          const attempt = MAX_RETRIES - retries + 1;
+          const delay = Math.pow(2, attempt - 1) * RETRY_BASE_DELAY_MS;
+
+          logger.warn("ServiceNow API rate limited, retrying with backoff", {
+            table: table || "unknown",
+            path: logPath,
+            httpStatus: response.status,
+            attempt,
+            maxRetries: MAX_RETRIES,
+            delayMs: delay,
+          });
+
+          clearTimeout(timeoutId);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          return this.request<T>(url, table, retries - 1);
+        }
 
         logger.error("ServiceNow API request failed", {
           table: table || "unknown",
