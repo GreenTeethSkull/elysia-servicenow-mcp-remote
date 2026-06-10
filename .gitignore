@@ -3,3 +3,5 @@ dist/
 .env
 *.log
 server
+*.bun-build
+.DS_Store
