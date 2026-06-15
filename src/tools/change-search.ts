@@ -8,8 +8,9 @@ import { extractPreview, formatDateTimeEs, getDisplayValue } from "../utils/form
 export const changeSearchSchema = {
   query: z
     .string()
-    .min(3)
+    // .min(3)
     .max(500)
+    .optional()
     .describe("Texto de busqueda para encontrar cambios (busca en short_description y description)"),
   limit: z
     .number()
@@ -64,7 +65,7 @@ export const changeSearchDescription =
 export async function handleChangeSearch(
   client: ServiceNowClient,
   args: {
-    query: string;
+    query?: string;
     limit: number;
     assignment_group?: string;
     state?: string;
@@ -77,10 +78,16 @@ export async function handleChangeSearch(
   const { query, limit, assignment_group, state, type, priority, risk, u_ambiente } = args;
 
   const searchFields = ["short_description", "description"];
-  const snQuery = buildSnQuery(query, searchFields);
+  // const snQuery = buildSnQuery(query, searchFields);
 
   const params = new URLSearchParams();
-  params.set("sn_query", snQuery);
+  // params.set("sn_query", snQuery);
+
+  if (query) {
+    const snQuery = buildSnQuery(query, searchFields);
+    params.set("sn_query", snQuery);
+  }
+
   params.set("limit", limit.toString());
 
   if (assignment_group) params.set("assignment_group", assignment_group);
