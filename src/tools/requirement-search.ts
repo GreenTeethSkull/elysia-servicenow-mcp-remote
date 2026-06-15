@@ -1,60 +1,49 @@
-/**
- * Requirement / Request Item search tool for ServiceNow.
- * Searches the sc_req_item table for service requests.
- */
-
 import { z } from "zod";
 import type { ServiceNowClient } from "../services/servicenow-client";
-import {
-  buildSearchQuery,
-  appendStatusFilter,
-  appendPriorityFilter,
-  appendCategoryFilter,
-} from "../utils/query-builder";
-import {
-  extractPreview,
-  formatDateEs,
-  formatDateTimeEs,
-  translateRequirementState,
-  translatePriority,
-  getDisplayValue,
-} from "../utils/formatters";
-
-// ── Schema ──
+import type { ServiceNowApiResponse } from "../services/servicenow-client";
+import { ENDPOINTS } from "../constants";
+import { buildSnQuery } from "../utils/query-builder";
+import { extractPreview, formatDateTimeEs, getDisplayValue } from "../utils/formatters";
 
 export const requirementSearchSchema = {
   query: z
     .string()
     .min(3)
     .max(500)
-    .describe("Consulta de busqueda para encontrar requerimientos relevantes"),
-  status: z
-    .enum(["open", "closed", "all"])
-    .default("all")
-    .describe(
-      "Estado de los requerimientos a buscar: 'open' (abiertos), 'closed' (cerrados), 'all' (todos)",
-    ),
-  priority: z
-    .enum(["low", "medium", "high", "critical"])
-    .optional()
-    .describe("Filtrar por prioridad especifica (opcional)"),
-  category: z
-    .string()
-    .max(100)
-    .optional()
-    .describe("Categoria especifica de requerimiento (opcional)"),
+    .describe("Texto de busqueda para encontrar requerimientos (busca en short_description y description)"),
   limit: z
     .number()
     .int()
     .min(1)
     .max(100)
-    .default(20)
-    .describe(
-      "Numero maximo de requerimientos a retornar (por defecto 20, maximo 100)",
-    ),
+    .default(10)
+    .describe("Numero maximo de requerimientos a retornar (por defecto 20, maximo 100)"),
+  assignment_group: z
+    .string()
+    .max(200)
+    .optional()
+    .describe("Filtrar por grupo de asignacion especifico (opcional)"),
+  state: z
+    .string()
+    .max(100)
+    .optional()
+    .describe("Filtrar por estado especifico (opcional)"),
+  priority: z
+    .string()
+    .max(100)
+    .optional()
+    .describe("Filtrar por prioridad especifica (opcional)"),
+  approval: z
+    .string()
+    .max(100)
+    .optional()
+    .describe("Filtrar por estado de aprobacion (opcional)"),
+  u_empresa: z
+    .string()
+    .max(100)
+    .optional()
+    .describe("Filtrar por empresa (opcional)"),
 };
-
-// ── Annotations ──
 
 export const requirementSearchAnnotations = {
   readOnlyHint: true,
@@ -62,135 +51,85 @@ export const requirementSearchAnnotations = {
   openWorldHint: true,
 };
 
-// ── Description ──
-
 export const requirementSearchDescription =
-  "Busca requerimientos y solicitudes en ServiceNow. " +
-  "Encuentra solicitudes de servicios, cambios, nuevas funcionalidades y requerimientos de negocio. " +
-  "Util para revisar solicitudes similares, procesos de aprobacion y estado de requerimientos.";
-
-// ── Fields to return ──
-
-const REQUIREMENT_FIELDS = [
-  "sys_id",
-  "number",
-  "short_description",
-  "description",
-  "state",
-  "priority",
-  "category",
-  "type",
-  "requested_for",
-  "opened_at",
-  "sys_updated_on",
-  "business_need",
-  "justification",
-  "expected_start",
-  "expected_end",
-].join(",");
-
-// ── Handler ──
+  "Busca requerimientos y solicitudes de servicio (RITM) en ServiceNow. " +
+  "Encuentra solicitudes de servicios, su estado de aprobacion, fechas y responsables. " +
+  "Util para revisar solicitudes similares y procesos de aprobacion.";
 
 export async function handleRequirementSearch(
   client: ServiceNowClient,
   args: {
     query: string;
-    status: string;
-    priority?: string;
-    category?: string;
     limit: number;
+    assignment_group?: string;
+    state?: string;
+    priority?: string;
+    approval?: string;
+    u_empresa?: string;
   },
 ): Promise<string> {
-  const { query, status, priority, category, limit } = args;
+  const { query, limit, assignment_group, state, priority, approval, u_empresa } = args;
 
-  // Build the encoded query
-  const searchFields = ["number", "short_description", "description"];
-  let sysparmQuery = buildSearchQuery(query, searchFields);
+  const searchFields = ["short_description", "description"];
+  const snQuery = buildSnQuery(query, searchFields);
 
-  // Requirements: open = not Completed/Closed (state != 3 and != 4)
-  sysparmQuery = appendStatusFilter(
-    sysparmQuery,
-    status,
-    "state!=3^state!=4",
-    "state=3^ORstate=4",
-  );
-  sysparmQuery = appendPriorityFilter(sysparmQuery, priority);
-  sysparmQuery = appendCategoryFilter(sysparmQuery, category);
-
-  // Build URL params
   const params = new URLSearchParams();
-  params.set("sysparm_query", `${sysparmQuery}^ORDERBYDESCopened_at`);
-  params.set("sysparm_limit", limit.toString());
-  params.set("sysparm_fields", REQUIREMENT_FIELDS);
+  params.set("sn_query", snQuery);
+  params.set("limit", limit.toString());
 
-  const response = await client.tableRequest<Record<string, unknown>[]>(
-    "sc_req_item",
+  if (assignment_group) params.set("assignment_group", assignment_group);
+  if (state) params.set("state", state);
+  if (priority) params.set("priority", priority);
+  if (approval) params.set("approval", approval);
+  if (u_empresa) params.set("u_empresa", u_empresa);
+
+  const response = await client.apiRequest<Record<string, unknown>>(
+    ENDPOINTS.requirements,
     params,
   );
 
-  const records = response.result || [];
-  const total = response.total ?? records.length;
-
-  // Build active filters summary
-  const filters: Record<string, string> = {};
-  if (status && status !== "all")
-    filters.estado = status === "open" ? "Abiertos" : "Cerrados";
-  if (priority) filters.prioridad = translatePriority(priority);
-  if (category) filters.categoria = category;
+  const records = response.result?.result || [];
+  const meta = response.result?.meta;
+  const total = meta?.total ?? records.length;
 
   if (records.length === 0) {
-    return JSON.stringify(
-      {
-        success: true,
-        message: `No se encontraron requerimientos para "${query}".`,
-        suggestions: [
-          status === "open"
-            ? "Busca tambien en requerimientos cerrados para ver implementaciones previas"
-            : status === "closed"
-              ? "Revisa requerimientos abiertos para solicitudes actuales"
-              : "Intenta con terminos mas generales",
-          "Especifica el tipo de servicio o sistema requerido",
-          "Incluye el area de negocio que solicita el requerimiento",
-          "Menciona si es un cambio, nueva funcionalidad o mejora",
-        ],
-        searchMetadata: {
-          query,
-          status,
-          filters,
-          timestamp: new Date().toISOString(),
-        },
-      },
-      null,
-      2,
-    );
+    return JSON.stringify({
+      success: true,
+      message: `No se encontraron requerimientos para "${query}".`,
+      suggestions: [
+        "Intenta con terminos mas generales",
+        "Especifica el tipo de servicio o sistema requerido",
+        "Incluye el area de negocio que solicita el requerimiento",
+      ],
+      searchMetadata: { query, totalFound: 0, timestamp: new Date().toISOString() },
+    }, null, 2);
   }
 
-  // Format requirements
   const requirements = records.map((record, index) => ({
     position: index + 1,
-    number: getDisplayValue(record.number, "N/A"),
-    title: getDisplayValue(record.short_description, "Sin titulo"),
-    description: extractPreview(record.description as string, 300, "Sin descripcion disponible"),
-    state: translateRequirementState(record.state as string),
-    priority: translatePriority(record.priority as string),
-    category: getDisplayValue(record.category, "Sin categoria"),
-    type: getDisplayValue(record.type, "Requerimiento general"),
-    requestedFor: getDisplayValue(record.requested_for, "Sin especificar"),
-    businessNeed: extractPreview(
-      record.business_need as string,
-      200,
-      "No especificada",
-    ),
-    justification: extractPreview(
-      record.justification as string,
-      200,
-      "No especificada",
-    ),
-    openedAt: formatDateTimeEs(record.opened_at as string),
-    updatedAt: formatDateTimeEs(record.sys_updated_on as string),
-    expectedStart: formatDateEs(record.expected_start as string, undefined, "No especificada"),
-    expectedEnd: formatDateEs(record.expected_end as string, undefined, "No especificada"),
-    sysId: record.sys_id,
+    number: getDisplayValue(record.number),
+    short_description: getDisplayValue(record.short_description, "Sin titulo"),
+    description: extractPreview(record.description as string, 300),
+    state: getDisplayValue(record.state),
+    stage: getDisplayValue(record.stage),
+    priority: getDisplayValue(record.priority),
+    u_categoria: getDisplayValue(record.u_categoria),
+    u_subcategoria_1: getDisplayValue(record.u_subcategoria_1),
+    u_subcategoria_2: getDisplayValue(record.u_subcategoria_2),
+    u_subcategoria_3: getDisplayValue(record.u_subcategoria_3),
+    requested_for: getDisplayValue(record.requested_for),
+    assignment_group: getDisplayValue(record.assignment_group, "Sin grupo"),
+    assigned_to: getDisplayValue(record.assigned_to, "Sin asignar"),
+    opened_at: formatDateTimeEs(record.opened_at as string),
+    sys_updated_on: formatDateTimeEs(record.sys_updated_on as string),
+    due_date: formatDateTimeEs(record.due_date as string, "Sin fecha limite"),
+    justification: extractPreview(record.justification as string, 200, "No especificada"),
+    expected_start: formatDateTimeEs(record.expected_start as string, "No especificada"),
+    approval: getDisplayValue(record.approval),
+    u_empresa: getDisplayValue(record.u_empresa),
+    u_categorias_concatenadas: getDisplayValue(record.u_categorias_concatenadas),
+    pending_approvers: record.pending_approvers || [],
+    sys_id: record.sys_id,
   }));
 
   const result: Record<string, unknown> = {
@@ -199,11 +138,10 @@ export async function handleRequirementSearch(
     requirements,
     searchMetadata: {
       query,
-      status,
-      filters,
       totalFound: total,
       returned: records.length,
       hasMore: records.length < total,
+      queryUsed: meta?.query_used,
       timestamp: new Date().toISOString(),
     },
   };
@@ -213,8 +151,7 @@ export async function handleRequirementSearch(
       hasMore: true,
       message:
         `Hay ${total - records.length} requerimientos adicionales disponibles. ` +
-        `Para ver mas resultados, aumenta el parametro limit (actual: ${limit}, maximo: 100) ` +
-        `o refina la busqueda con terminos mas especificos o filtros adicionales (prioridad, categoria, estado).`,
+        `Aumenta el parametro limit (actual: ${limit}, max: 100) o refina la busqueda.`,
     };
   }
 

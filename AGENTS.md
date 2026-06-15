@@ -4,7 +4,7 @@ Este archivo proporciona contexto esencial del proyecto **elysia-servicenow-mcp-
 
 ## Descripción del Proyecto
 
-Servidor MCP (Model Context Protocol) remoto para ServiceNow, construido con ElysiaJS y Bun. Expone 5 herramientas para buscar incidentes, problemas, cambios, requisitos y artículos de la base de conocimientos en una instancia de ServiceNow. Diseñado para ser consumido por agentes de IA (Claude, Cursor, etc.) vía Streamable HTTP.
+Servidor MCP (Model Context Protocol) remoto para ServiceNow, construido con ElysiaJS y Bun. Expone 4 herramientas para buscar incidentes, problemas, cambios y requisitos en una instancia de ServiceNow. Diseñado para ser consumido por agentes de IA (Claude, Cursor, etc.) vía Streamable HTTP.
 
 ## Stack Tecnológico
 
@@ -13,7 +13,7 @@ Servidor MCP (Model Context Protocol) remoto para ServiceNow, construido con Ely
 - **Protocolo**: MCP (Model Context Protocol) via Streamable HTTP
 - **Lenguaje**: TypeScript
 - **Contenedorización**: Docker (multi-stage build)
-- **Autenticación**: ServiceNow Basic Auth (username + password)
+- **Autenticación**: ServiceNow OAuth2 (Resource Owner Password Credentials grant)
 
 ## Arquitectura
 
@@ -26,24 +26,29 @@ ElysiaJS Server
   ↓ Crea McpServer + StreamableHTTPServerTransport por request
 McpServer (instancia aislada)
   ↓ Ejecuta tool handler
-ServiceNowClient
-  ↓ HTTP requests a ServiceNow Table API
+ServiceNowClient (OAuth2 Bearer token)
+  ↓ HTTP requests a endpoints custom de ServiceNow
 ServiceNow Instance
 ```
 
 ### Concurrencia
 
-**IMPORTANTE**: Cada request POST `/mcp` crea una nueva instancia de `McpServer` y `StreamableHTTPServerTransport`. Esto permite manejar múltiples requests simultáneos sin conflictos de estado compartido.
+Cada request POST `/mcp` crea una nueva instancia de `McpServer` y `StreamableHTTPServerTransport`. Esto permite manejar múltiples requests simultáneos sin conflictos de estado compartido.
 
-- **Antes (bug)**: Un solo `McpServer` compartido → fallaba con concurrencia > 1
-- **Ahora (fix)**: `createMcpServer()` factory por request → concurrencia ilimitada
+### Autenticación OAuth2
+
+El `ServiceNowClient` implementa gestión completa de tokens OAuth2:
+- **Obtención de token**: POST a `/oauth_token.do` con grant_type=password
+- **Cache en memoria**: El token se almacena y reutiliza hasta su expiración
+- **Auto-refresh**: Se refresca automáticamente 60 segundos antes de expirar
+- **Re-auth en 401**: Si un request retorna 401, se obtiene un nuevo token y se reintenta
+- **Variables de entorno**: `SERVICENOW_CLIENT_ID`, `SERVICENOW_CLIENT_SECRET`, `SERVICENOW_USERNAME`, `SERVICENOW_PASSWORD`
 
 ### Rate Limiting
 
 - **Límite**: 60 tool calls por ventana de 60 segundos (global, no por cliente)
 - **Configuración**: `src/constants.ts` → `RATE_LIMIT_MAX_CALLS = 60`, `RATE_LIMIT_WINDOW_MS = 60_000`
 - **Implementación**: Array en memoria `toolCallTimestamps` en `src/tools/index.ts`
-- **Comportamiento**: Cuando se excede, retorna error JSON-RPC con mensaje de rate limit
 
 ### Retry con Backoff
 
@@ -58,21 +63,20 @@ El `ServiceNowClient` implementa reintentos automáticos ante HTTP 429:
 src/
 ├── index.ts                       # Entry point - inicializa servidor
 ├── server.ts                      # ElysiaJS app + endpoint /mcp + concurrencia
-├── constants.ts                   # Constantes globales (rate limit, timeouts, retry, etc.)
+├── constants.ts                   # Constantes globales (OAuth, endpoints, rate limit, etc.)
 ├── services/
-│   ├── servicenow-client.ts       # Cliente HTTP para ServiceNow Table API (Basic Auth + retry)
-│   ├── servicenow-env.ts          # Validación de variables de entorno
+│   ├── servicenow-client.ts       # Cliente HTTP con OAuth2 (token management + retry)
+│   ├── servicenow-env.ts          # Validación de variables de entorno OAuth
 │   └── logger.ts                  # Sistema de logging estructurado (JSON + child loggers)
 ├── tools/
 │   ├── index.ts                   # Registro de tools + rate limiting + error handling
-│   ├── kb-search.ts               # Tool: kb_search (Knowledge Base)
 │   ├── incident-search.ts         # Tool: incident_search
 │   ├── problem-search.ts          # Tool: problem_search
 │   ├── requirement-search.ts      # Tool: requirement_search
 │   └── change-search.ts           # Tool: change_search
 └── utils/
     ├── formatters.ts              # Formateo de respuestas
-    └── query-builder.ts           # Constructor de queries ServiceNow
+    └── query-builder.ts           # Constructor de queries sn_query
 ```
 
 ## Comandos
@@ -108,24 +112,78 @@ docker buildx build \
 
 | Variable | Requerido | Default | Descripción |
 |----------|-----------|---------|-------------|
-| `SERVICENOW_INSTANCE_URL` | Sí | - | URL de la instancia ServiceNow (e.g., `https://dev12345.service-now.com`) |
-| `SERVICENOW_USERNAME` | Sí | - | Usuario para Basic Auth |
-| `SERVICENOW_PASSWORD` | Sí | - | Contraseña para Basic Auth |
+| `SERVICENOW_INSTANCE_URL` | Sí | - | URL de la instancia ServiceNow (e.g., `https://giotst.service-now.com`) |
+| `SERVICENOW_CLIENT_ID` | Sí | - | Client ID para OAuth2 |
+| `SERVICENOW_CLIENT_SECRET` | Sí | - | Client Secret para OAuth2 |
+| `SERVICENOW_USERNAME` | Sí | - | Usuario para OAuth2 password grant |
+| `SERVICENOW_PASSWORD` | Sí | - | Contraseña para OAuth2 password grant |
 | `SERVICENOW_TIMEOUT` | No | `30000` | Timeout de requests API en ms (rango: 1000-120000) |
 | `PORT` | No | `3000` | Puerto del servidor |
 | `HOST` | No | `0.0.0.0` | Host donde bindea el servidor |
 | `CORS_ORIGIN` | No | `*` | Orígenes permitidos para CORS |
 | `LOG_LEVEL` | No | `info` | Nivel de logging (debug, info, warn, error) |
 
-## Herramientas MCP Disponibles (5 tools)
+## Endpoints de ServiceNow (Custom API)
 
-| Tool | Descripción | Tabla ServiceNow | Archivo |
-|------|-------------|------------------|---------|
-| `kb_search` | Busca artículos en Knowledge Base | `kb_knowledge` | `tools/kb-search.ts` |
-| `incident_search` | Busca incidentes con filtros | `incident` | `tools/incident-search.ts` |
-| `problem_search` | Busca problemas registrados | `problem` | `tools/problem-search.ts` |
-| `requirement_search` | Busca requisitos | `rm_story` | `tools/requirement-search.ts` |
-| `change_search` | Busca solicitudes de cambio (RFC) | `change_request` | `tools/change-search.ts` |
+Los endpoints están definidos en `src/constants.ts` como `ENDPOINTS`. Para cambiar de test a producción, solo modifica las rutas en ese archivo:
+
+```typescript
+// src/constants.ts
+export const API_BASE_PATH = "/api/pase/lucy_ai_pacifico";
+export const ENDPOINTS = {
+  incidents: `${API_BASE_PATH}/getinc`,
+  changes: `${API_BASE_PATH}/getchg`,
+  requirements: `${API_BASE_PATH}/getritm`,
+  problems: `${API_BASE_PATH}/getprb`,
+} as const;
+```
+
+### Formato de Request a ServiceNow
+
+```
+GET {instanceUrl}{endpoint}?sn_query={query}&limit={limit}&{field_filter}={value}
+Authorization: Bearer {access_token}
+```
+
+- **sn_query**: Query de búsqueda con sintaxis CONTAINS (e.g., `short_descriptionCONTAINSerror^ORdescriptionCONTAINSerror`)
+- **limit**: Número máximo de resultados
+- **Filtros por campo**: Se pasan como query params directos (e.g., `assignment_group=Squad_X`, `state=Asignado`)
+
+### Formato de Response de ServiceNow
+
+```json
+{
+  "result": {
+    "result": [ ... ],
+    "meta": {
+      "total": 34096,
+      "limit": 10,
+      "offset": 0,
+      "returned": 10,
+      "query_used": "descriptionCONTAINSerror"
+    }
+  }
+}
+```
+
+## Herramientas MCP Disponibles (4 tools)
+
+| Tool | Descripción | Endpoint | Archivo |
+|------|-------------|----------|---------|
+| `incident_search` | Busca incidentes con filtros | `/api/pase/lucy_ai_pacifico/getinc` | `tools/incident-search.ts` |
+| `problem_search` | Busca problemas registrados | `/api/pase/lucy_ai_pacifico/getprb` | `tools/problem-search.ts` |
+| `requirement_search` | Busca requisitos (RITM) | `/api/pase/lucy_ai_pacifico/getritm` | `tools/requirement-search.ts` |
+| `change_search` | Busca solicitudes de cambio (CHG) | `/api/pase/lucy_ai_pacifico/getchg` | `tools/change-search.ts` |
+
+### Campos por Tool
+
+**incident_search**: sys_id, number, short_description, description, state, priority, urgency, u_categoria, u_subcategoria_1/2/3, caller_id, assigned_to, assignment_group, opened_at, sys_updated_on, close_notes, resolution_code, resolved_at, closed_at
+
+**change_search**: sys_id, number, short_description, description, state, type, priority, risk, assignment_group, assigned_to, requested_by, start_date, end_date, sys_created_on, sys_updated_on, cmdb_ci, justification, implementation_plan, backout_plan, close_notes, u_ambiente, u_clase_cambio, u_tipo_tecnologia, u_squad, u_asistente_cambio
+
+**requirement_search**: sys_id, number, short_description, description, state, stage, priority, u_categoria, u_subcategoria_1/2/3, requested_for, assignment_group, assigned_to, opened_at, sys_updated_on, due_date, justification, expected_start, approval, u_empresa, u_categorias_concatenadas, pending_approvers
+
+**problem_search**: sys_id, number, short_description, description, state, priority, impact, u_categoria, u_subcategoria_1/2/3, assigned_to, assignment_group, sys_created_on, sys_updated_on, root_cause, work_around, business_service, related_incidents, known_error, u_empresa
 
 ## Convenciones de Código
 
@@ -188,27 +246,12 @@ Sistema de logging estructurado JSON en `src/services/logger.ts`:
 logger.info("message", {
   correlationId: "abc123",
   toolName: "incident_search",
-  table: "incident",
   durationMs: 1234,
 });
-
-// Child logger con contexto pre-seteado
-const toolLog = logger.child({ callId, toolName: "incident_search" });
-toolLog.info("Tool call started", { args: { ... } });
 ```
 
 **Niveles**: debug, info, warn, error
 **Salida**: JSON a stdout (info/debug/warn) y stderr (error) — compatible con Azure App Service Log Analytics
-
-### Cliente ServiceNow
-
-`src/services/servicenow-client.ts`:
-- Usa `fetch` nativo de Bun
-- Autenticación via header `Authorization: Basic <base64(user:pass)>`
-- Timeout configurable (`SERVICENOW_TIMEOUT`, default 30s)
-- Retry automático con exponential backoff ante HTTP 429
-- Clase `ServiceNowApiError` para errores HTTP de ServiceNow
-- Logging de cada API call (tabla, duración, status, record count)
 
 ## Endpoints HTTP
 
@@ -222,31 +265,11 @@ toolLog.info("Tool call started", { args: { ... } });
 
 ## Problemas Conocidos y Soluciones
 
-### Bug de Concurrencia (RESUELTO)
+### Token OAuth Expirado
 
-**Problema**: Un solo `McpServer` compartido causaba fallos con requests simultáneos.
-
-**Solución**: Crear nuevo `McpServer` por request en `server.ts`:
-
-```typescript
-function createMcpServer(snClient: ServiceNowClient): McpServer {
-  const server = new McpServer({ name: "...", version: "..." }, { capabilities: { tools: {} } });
-  registerAllTools(server, snClient);
-  return server;
-}
-
-.post("/mcp", async ({ request, set }) => {
-  const mcpServer = createMcpServer(snClient);
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  // ... manejo de request
-});
-```
-
-### Rate Limit Excedido
-
-Si ves errores de rate limit:
-- Aumenta `RATE_LIMIT_MAX_CALLS` en `src/constants.ts`
-- Considera implementar rate limiting por cliente (actualmente es global)
+El cliente maneja esto automáticamente:
+- Refresca 60 segundos antes de expirar (`TOKEN_REFRESH_BUFFER_MS`)
+- Si recibe HTTP 401, obtiene nuevo token y reintenta la petición
 
 ### HTTP 429 de ServiceNow
 
@@ -254,11 +277,28 @@ El cliente ya maneja esto automáticamente con retry + exponential backoff. Si p
 - Aumenta `MAX_RETRIES` en `src/constants.ts`
 - Aumenta `RETRY_BASE_DELAY_MS` en `src/constants.ts`
 
+### Cambiar de Test a Producción
+
+Solo modifica `src/constants.ts`:
+
+```typescript
+export const API_BASE_PATH = "/api/pase/lucy_ai_prod"; // nueva ruta base
+export const ENDPOINTS = {
+  incidents: `${API_BASE_PATH}/getinc`,
+  changes: `${API_BASE_PATH}/getchg`,
+  requirements: `${API_BASE_PATH}/getritm`,
+  problems: `${API_BASE_PATH}/getprb`,
+} as const;
+```
+
+Y actualiza las variables de entorno con las credenciales de producción.
+
 ## Notas de Seguridad
 
 - **NUNCA** commitear el archivo `.env` con credenciales reales
 - El `.gitignore` ya excluye `.env`
-- Las credenciales se envían como Basic Auth (base64) — usar HTTPS siempre
+- Las credenciales OAuth se envían como POST body — usar HTTPS siempre
+- Los tokens se almacenan solo en memoria (no persisten)
 - Validar siempre inputs con schemas Zod
 
 ## Mantenimiento
@@ -269,7 +309,8 @@ El cliente ya maneja esto automáticamente con retry + exponential backoff. Si p
 2. Exportar: `schema`, `annotations`, `description`, `handler`
 3. Importar en `src/tools/index.ts`
 4. Agregar al array `toolDefinitions` dentro de `registerAllTools()`
-5. Actualizar README.md y este AGENTS.md
+5. Agregar endpoint en `src/constants.ts` → `ENDPOINTS`
+6. Actualizar README.md y este AGENTS.md
 
 ### Actualizar Dependencias
 
@@ -278,13 +319,6 @@ bun update
 bun run typecheck   # Verificar tipos
 bun run build       # Verificar build
 ```
-
-### Publicar Nueva Versión
-
-1. Actualizar versión en `package.json` y `src/constants.ts`
-2. Build multi-arquitectura Docker
-3. Push a Docker Hub
-4. Tag en Git
 
 ## Contacto y Soporte
 

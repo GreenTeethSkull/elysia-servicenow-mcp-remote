@@ -1,10 +1,11 @@
 # ServiceNow MCP Server (ElysiaJS + Bun)
 
-Servidor MCP (Model Context Protocol) remoto para ServiceNow, construido con ElysiaJS y Bun. Expone herramientas para buscar incidentes, problemas, cambios, requisitos y artículos de la base de conocimientos en tu instancia de ServiceNow.
+Servidor MCP (Model Context Protocol) remoto para ServiceNow, construido con ElysiaJS y Bun. Expone herramientas para buscar incidentes, problemas, cambios y requisitos en tu instancia de ServiceNow vía OAuth2.
 
 ## Características
 
 - **Remote MCP Server**: Implementa el protocolo MCP vía Streamable HTTP (stateless)
+- **OAuth2 Authentication**: Gestión automática de tokens con auto-refresh y re-auth en 401
 - **TypeScript + Bun**: Código type-safe con el runtime de Bun de alto rendimiento
 - **ElysiaJS**: Framework web ultrarrápido y minimalista
 - **Rate Limiting**: Protección contra abusos (60 llamadas por minuto)
@@ -14,21 +15,20 @@ Servidor MCP (Model Context Protocol) remoto para ServiceNow, construido con Ely
 
 ## Herramientas Disponibles
 
-El servidor expose las siguientes 5 herramientas (tools) MCP:
+El servidor expone las siguientes 4 herramientas (tools) MCP:
 
 | Herramienta | Descripción |
 |-------------|-------------|
-| `kb_search` | Busca artículos en la Base de Conocimientos de ServiceNow. Ideal para encontrar procedimientos, guías técnicas, soluciones documentadas y mejores prácticas. |
-| `incident_search` | Busca incidentes en ServiceNow. Útil para revisar problemas similares y sus soluciones implementadas. Soporta filtros por estado, prioridad, categoría y urgencia. |
-| `problem_search` | Busca problemas registrados en ServiceNow. Permite analizar problemas conocidos y sus soluciones de raíz. |
-| `requirement_search` | Busca requisitos en el sistema de Gestión de Requisitos de ServiceNow. |
-| `change_search` | Busca solicitudes de cambio (RFC) en ServiceNow. Útil para revisar cambios planificados o realizados en la infraestructura. |
+| `incident_search` | Busca incidentes en ServiceNow. Soporta filtros por estado, prioridad, categoría, urgencia, grupo de asignación y caller. |
+| `problem_search` | Busca problemas registrados en ServiceNow. Permite analizar problemas conocidos, causas raíz y workarounds. |
+| `requirement_search` | Busca requerimientos (RITM) en ServiceNow. Incluye estado de aprobación, pending approvers y fechas. |
+| `change_search` | Busca solicitudes de cambio (CHG) en ServiceNow. Incluye tipo, riesgo, ambiente, squad y asistente de cambio. |
 
 ## Requisitos Previos
 
 - [Bun](https://bun.sh) >= 1.0 (runtime de JavaScript)
 - Docker (para despliegue en contenedor)
-- Cuenta de ServiceNow con acceso API (Basic Auth)
+- Cuenta de ServiceNow con acceso API y credenciales OAuth2 (client_id, client_secret)
 
 ## Configuración
 
@@ -40,11 +40,13 @@ Crea un archivo `.env` basado en el ejemplo:
 cp .env.example .env
 ```
 
-Edita `.env` con tus credenciales:
+Edita `.env` con tus credenciales OAuth2:
 
 ```env
 # Required
 SERVICENOW_INSTANCE_URL=https://tu-instancia.service-now.com
+SERVICENOW_CLIENT_ID=tu-client-id
+SERVICENOW_CLIENT_SECRET=tu-client-secret
 SERVICENOW_USERNAME=tu-usuario
 SERVICENOW_PASSWORD=tu-contraseña
 
@@ -66,7 +68,7 @@ bun install
 
 ### 2. Configurar credenciales
 
-Crea el archivo `.env` con tus credenciales de ServiceNow (ver sección anterior).
+Crea el archivo `.env` con tus credenciales OAuth2 de ServiceNow (ver sección anterior).
 
 ### 3. Ejecutar en modo desarrollo
 
@@ -99,6 +101,8 @@ Con variables de entorno en línea:
 ```bash
 docker run -p 3000:3000 \
   -e SERVICENOW_INSTANCE_URL=https://tu-instancia.service-now.com \
+  -e SERVICENOW_CLIENT_ID=tu-client-id \
+  -e SERVICENOW_CLIENT_SECRET=tu-client-secret \
   -e SERVICENOW_USERNAME=tu-usuario \
   -e SERVICENOW_PASSWORD=tu-contraseña \
   elysia-servicenow-mcp-remote
@@ -126,14 +130,6 @@ Build y push multi-plataforma (AMD64 + ARM64):
 
 ```bash
 docker buildx build --platform linux/amd64,linux/arm64 \
-  -t tu-usuario-dockerhub/elysia-servicenow-mcp-remote:latest \
-  --push .
-```
-
-Ejemplo con tu usuario:
-
-```bash
-docker buildx build --platform linux/amd64,linux/arm64 \
   -t greenteethskull/elysia-servicenow-mcp-remote:latest \
   --push .
 ```
@@ -149,7 +145,7 @@ Endpoint MCP: `http://localhost:3000/mcp`
 | Comando | Descripción |
 |---------|-------------|
 | `bun run dev` | Desarrollo con hot-reload |
-| `bun run start` | Producción (requiere build) |
+| `bun run start` | Producción |
 | `bun run build` | Compila a binario standalone |
 | `bun run typecheck` | Verifica tipos TypeScript |
 | `bun run docker:build` | Build de imagen Docker |
@@ -161,21 +157,20 @@ Endpoint MCP: `http://localhost:3000/mcp`
 src/
 ├── index.ts          # Entry point
 ├── server.ts         # Servidor Elysia + MCP
-├── constants.ts      # Constantes globales
+├── constants.ts      # Constantes globales (OAuth, endpoints, rate limit)
 ├── services/
-│   ├── servicenow-client.ts   # Cliente REST de ServiceNow
+│   ├── servicenow-client.ts   # Cliente OAuth2 de ServiceNow
 │   ├── servicenow-env.ts      # Carga de variables de entorno
-│   └── logger.ts              # Logging
+│   └── logger.ts              # Logging estructurado
 ├── tools/
-│   ├── index.ts           # Registro de herramientas
-│   ├── kb-search.ts       # Búsqueda de KB
-│   ├── incident-search.ts # Búsqueda de incidentes
-│   ├── problem-search.ts  # Búsqueda de problemas
+│   ├── index.ts              # Registro de herramientas
+│   ├── incident-search.ts    # Búsqueda de incidentes
+│   ├── problem-search.ts     # Búsqueda de problemas
 │   ├── requirement-search.ts # Búsqueda de requisitos
-│   └── change-search.ts   # Búsqueda de cambios
+│   └── change-search.ts      # Búsqueda de cambios
 └── utils/
-    ├── formatters.ts      # Formateo de respuestas
-    └── query-builder.ts   # Constructor de queries
+    ├── formatters.ts         # Formateo de respuestas
+    └── query-builder.ts      # Constructor de queries sn_query
 ```
 
 ## Licencia

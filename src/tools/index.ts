@@ -1,10 +1,3 @@
-/**
- * Tool registry - registers all ServiceNow MCP tools on the McpServer.
- *
- * Wraps every tool handler with rate limiting, error handling,
- * and structured logging for full observability.
- */
-
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
@@ -13,13 +6,6 @@ import { ServiceNowApiError } from "../services/servicenow-client";
 import { RATE_LIMIT_MAX_CALLS, RATE_LIMIT_WINDOW_MS } from "../constants";
 import { logger, generateCorrelationId } from "../services/logger";
 
-// Tool imports
-import {
-  kbSearchSchema,
-  kbSearchAnnotations,
-  kbSearchDescription,
-  handleKbSearch,
-} from "./kb-search";
 import {
   incidentSearchSchema,
   incidentSearchAnnotations,
@@ -45,12 +31,8 @@ import {
   handleChangeSearch,
 } from "./change-search";
 
-// Rate limiting state
 let toolCallTimestamps: number[] = [];
 
-/**
- * Summarize tool arguments for logging (truncate long strings, omit sensitive fields).
- */
 function summarizeToolArgs(
   args: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -65,10 +47,6 @@ function summarizeToolArgs(
   return summary;
 }
 
-/**
- * Extract a short summary from the tool result for logging.
- * Returns record count and first few chars of the response.
- */
 function summarizeToolResult(result: string): {
   responseLength: number;
   recordCount: number | null;
@@ -79,8 +57,6 @@ function summarizeToolResult(result: string): {
     let recordCount: number | null = null;
     if (parsed.searchMetadata?.returned) {
       recordCount = parsed.searchMetadata.returned;
-    } else if (parsed.articles) {
-      recordCount = parsed.articles.length;
     } else if (parsed.incidents) {
       recordCount = parsed.incidents.length;
     } else if (parsed.problems) {
@@ -104,9 +80,6 @@ function summarizeToolResult(result: string): {
   }
 }
 
-/**
- * Wrapper that adds rate limiting, error handling, and structured logging to each tool.
- */
 function createToolHandler(
   name: string,
   handler: (args: any) => Promise<string>,
@@ -116,7 +89,6 @@ function createToolHandler(
     const startTime = performance.now();
     const toolLog = logger.child({ callId, toolName: name });
 
-    // Rate limiting: max N calls per window
     const windowStart = Date.now() - RATE_LIMIT_WINDOW_MS;
     toolCallTimestamps = toolCallTimestamps.filter((ts) => ts > windowStart);
 
@@ -140,7 +112,6 @@ function createToolHandler(
 
     toolCallTimestamps.push(Date.now());
 
-    // Log tool call start
     toolLog.info("Tool call started", {
       args: summarizeToolArgs(args),
     });
@@ -167,7 +138,7 @@ function createToolHandler(
         let additionalInfo = "";
         if (error.status === 401) {
           additionalInfo =
-            " Verifica las credenciales de ServiceNow (usuario y contrasena).";
+            " Token OAuth invalido o expirado. Verifica las credenciales OAuth.";
         } else if (error.status === 403) {
           additionalInfo =
             " El usuario no tiene permisos suficientes para acceder a este recurso.";
@@ -210,21 +181,11 @@ function createToolHandler(
   };
 }
 
-/**
- * Register all ServiceNow MCP tools on the given McpServer.
- */
 export function registerAllTools(
   server: McpServer,
   client: ServiceNowClient,
 ): void {
   const toolDefinitions = [
-    {
-      name: "kb_search",
-      description: kbSearchDescription,
-      schema: kbSearchSchema,
-      annotations: kbSearchAnnotations,
-      handler: (args: any) => handleKbSearch(client, args),
-    },
     {
       name: "incident_search",
       description: incidentSearchDescription,

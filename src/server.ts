@@ -1,16 +1,3 @@
-/**
- * ElysiaJS HTTP Server with MCP Streamable HTTP transport.
- *
- * This server exposes a single /mcp endpoint that handles:
- * - POST /mcp  -> receives JSON-RPC requests from MCP clients
- * - GET  /mcp  -> returns 405 (stateless mode, no SSE stream needed)
- * - DELETE /mcp -> returns 405 (stateless, no sessions to terminate)
- *
- * Plus utility endpoints:
- * - GET /health -> health check
- * - GET /       -> server info
- */
-
 import { Elysia } from "elysia";
 import { cors } from "@elysiajs/cors";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -22,10 +9,6 @@ import { getServiceNowEnv } from "./services/servicenow-env";
 import { registerAllTools } from "./tools";
 import { logger, generateCorrelationId } from "./services/logger";
 
-/**
- * Extract the JSON-RPC method from a parsed MCP request body.
- * MCP uses JSON-RPC 2.0: { jsonrpc, id, method, params }
- */
 function extractJsonRpcMethod(body: unknown): {
   method: string;
   id: string | number | null;
@@ -43,9 +26,6 @@ function extractJsonRpcMethod(body: unknown): {
   return { method: "unknown", id: null, params: null };
 }
 
-/**
- * Summarize tool call args for logging (truncate long values, omit sensitive data).
- */
 function summarizeArgs(args: unknown): Record<string, unknown> | undefined {
   if (!args || typeof args !== "object") return undefined;
   const summary: Record<string, unknown> = {};
@@ -59,10 +39,6 @@ function summarizeArgs(args: unknown): Record<string, unknown> | undefined {
   return summary;
 }
 
-/**
- * Creates a fresh McpServer instance with all tools registered.
- * Called per-request to support concurrent requests without shared state.
- */
 function createMcpServer(snClient: ServiceNowClient): McpServer {
   const server = new McpServer(
     {
@@ -81,39 +57,35 @@ function createMcpServer(snClient: ServiceNowClient): McpServer {
   return server;
 }
 
-/**
- * Creates and configures the ElysiaJS application with MCP transport.
- */
 export async function createApp() {
-  // ── 1. Read and validate environment ──
   const env = getServiceNowEnv();
 
-  // ── 2. Create ServiceNow client with Basic Auth ──
   const snClient = new ServiceNowClient({
     instanceUrl: env.instanceUrl,
+    oauthUrl: env.oauthUrl,
+    clientId: env.clientId,
+    clientSecret: env.clientSecret,
     username: env.username,
     password: env.password,
     timeout: env.timeout,
   });
 
-  // ── 3. Test connection to ServiceNow ──
-  logger.info("Testing ServiceNow connection", {
+  logger.info("Testing ServiceNow OAuth connection", {
     instanceUrl: env.instanceUrl,
   });
 
   const connectionTest = await snClient.testConnection();
   if (!connectionTest.success) {
-    logger.error("ServiceNow connection failed", {
+    logger.error("ServiceNow OAuth connection failed", {
       error: connectionTest.error,
       instanceUrl: env.instanceUrl,
     });
     process.exit(2);
   }
-  logger.info("ServiceNow connection established", {
+  logger.info("ServiceNow OAuth connection established", {
     instanceUrl: env.instanceUrl,
   });
 
-  // ── 4. Build ElysiaJS app ──
   const corsOrigin = process.env.CORS_ORIGIN || "*";
 
   const app = new Elysia({ aot: true })
@@ -132,7 +104,6 @@ export async function createApp() {
       }),
     )
 
-    // ── Request logging (all HTTP requests) ──
     .onRequest(({ request }) => {
       logger.debug("HTTP request received", {
         method: request.method,
@@ -141,7 +112,6 @@ export async function createApp() {
       });
     })
 
-    // ── Health check ──
     .get("/health", () => {
       logger.debug("Health check requested");
       return {
@@ -152,7 +122,6 @@ export async function createApp() {
       };
     })
 
-    // ── Server info ──
     .get("/", () => ({
       name: SERVER_NAME,
       version: SERVER_VERSION,
@@ -165,16 +134,12 @@ export async function createApp() {
       message: "Send MCP requests via POST to /mcp endpoint",
     }))
 
-    // ── MCP Endpoint: POST /mcp ──
-    // Each POST creates a new McpServer + StreamableHTTPServerTransport (stateless)
     .post("/mcp", async ({ request, set }) => {
       const correlationId = generateCorrelationId();
       const requestStart = performance.now();
 
-      // Create a fresh McpServer per request to support concurrent requests
       const mcpServer = createMcpServer(snClient);
 
-      // Read the raw body
       const rawBody = await request.text();
 
       let body: unknown;
@@ -193,10 +158,8 @@ export async function createApp() {
         };
       }
 
-      // Extract JSON-RPC method for logging
       const { method, id: rpcId, params } = extractJsonRpcMethod(body);
 
-      // For tool calls, extract the tool name from params
       const toolName: string | undefined =
         method === "tools/call" && params && typeof params === "object"
           ? typeof (params as Record<string, unknown>).name === "string"
@@ -204,7 +167,6 @@ export async function createApp() {
             : undefined
           : undefined;
 
-      // Build args summary for tool calls
       const toolArgs: Record<string, unknown> | undefined =
         method === "tools/call" && params && typeof params === "object"
           ? summarizeArgs((params as Record<string, unknown>).arguments)
@@ -220,14 +182,11 @@ export async function createApp() {
         userAgent: request.headers.get("user-agent") || undefined,
       });
 
-      // Create a stateless HTTP transport for each request
       const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined, // stateless - no sessions
+        sessionIdGenerator: undefined,
       });
 
-      // Bridge Elysia's Web Standard Request to the MCP SDK's Node.js-style API
       return new Promise(async (resolve) => {
-        // Build a minimal Node-style response interface
         const chunks: Buffer[] = [];
         let statusCode = 200;
         const responseHeaders: Record<string, string> = {};
@@ -275,11 +234,9 @@ export async function createApp() {
               set.headers[k] = v;
             }
 
-            // Try to parse as JSON, otherwise return as text
             try {
               const parsed = JSON.parse(responseBody);
 
-              // Log successful MCP response
               if (statusCode >= 400) {
                 logger.warn("MCP request completed with error status", {
                   correlationId,
@@ -334,7 +291,6 @@ export async function createApp() {
           },
         };
 
-        // Build a minimal Node-style request interface
         const headersObj = Object.fromEntries(request.headers.entries());
         const rawHeaders: string[] = [];
         for (const [k, v] of Object.entries(headersObj)) {
@@ -361,10 +317,7 @@ export async function createApp() {
         };
 
         try {
-          // Connect mcpServer to transport
           await mcpServer.connect(transport);
-
-          // Handle the request through the MCP transport
           await transport.handleRequest(
             fakeReq as any,
             fakeRes as any,
@@ -388,14 +341,12 @@ export async function createApp() {
             error: { code: -32603, message: "Internal error" },
           });
         } finally {
-          // Cleanup: close transport after response is sent
           transport.close().catch(() => {});
           mcpServer.close().catch(() => {});
         }
       });
     })
 
-    // ── MCP Endpoint: GET /mcp (not supported in stateless mode) ──
     .get("/mcp", ({ set }) => {
       set.status = 405;
       set.headers["allow"] = "POST";
@@ -406,7 +357,6 @@ export async function createApp() {
       };
     })
 
-    // ── MCP Endpoint: DELETE /mcp (not supported in stateless mode) ──
     .delete("/mcp", ({ set }) => {
       set.status = 405;
       set.headers["allow"] = "POST";
