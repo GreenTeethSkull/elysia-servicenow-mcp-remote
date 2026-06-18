@@ -77,7 +77,28 @@ export async function handleChangeSearch(
 ): Promise<string> {
   const { query, limit, assignment_group, state, type, priority, risk, u_ambiente } = args;
 
-  const searchFields = ["short_description", "description"];
+  const searchFields = [
+    "number",
+    "short_description",
+    "description",
+    "state",
+    "type",
+    "priority",
+    "risk",
+    "assignment_group",
+    "assigned_to",
+    "requested_by",
+    "cmdb_ci",
+    "justification",
+    "implementation_plan",
+    "backout_plan",
+    "close_notes",
+    "u_ambiente",
+    "u_clase_cambio",
+    "u_tipo_tecnologia",
+    "u_squad",
+    "u_asistente_cambio",
+  ];
   // const snQuery = buildSnQuery(query, searchFields);
 
   const params = new URLSearchParams();

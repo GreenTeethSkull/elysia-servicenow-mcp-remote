@@ -71,7 +71,23 @@ export async function handleIncidentSearch(
 ): Promise<string> {
   const { query, limit, assignment_group, state, priority, u_categoria, caller_id } = args;
 
-  const searchFields = ["short_description", "description"];
+  const searchFields = [
+    "number",
+    "short_description",
+    "description",
+    "state",
+    "priority",
+    "urgency",
+    "u_categoria",
+    "u_subcategoria_1",
+    "u_subcategoria_2",
+    "u_subcategoria_3",
+    "caller_id",
+    "assigned_to",
+    "assignment_group",
+    "close_notes",
+    "resolution_code",
+  ];
   // const snQuery = buildSnQuery(query, searchFields);
 
   const params = new URLSearchParams();

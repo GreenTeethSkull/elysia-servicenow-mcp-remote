@@ -71,7 +71,25 @@ export async function handleRequirementSearch(
 ): Promise<string> {
   const { query, limit, assignment_group, state, priority, approval, u_empresa } = args;
 
-  const searchFields = ["short_description", "description"];
+  const searchFields = [
+    "number",
+    "short_description",
+    "description",
+    "state",
+    "stage",
+    "priority",
+    "u_categoria",
+    "u_subcategoria_1",
+    "u_subcategoria_2",
+    "u_subcategoria_3",
+    "requested_for",
+    "assignment_group",
+    "assigned_to",
+    "justification",
+    "approval",
+    "u_empresa",
+    "u_categorias_concatenadas",
+  ];
   // const snQuery = buildSnQuery(query, searchFields);
 
   const params = new URLSearchParams();
